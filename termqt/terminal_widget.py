@@ -1,19 +1,13 @@
 import logging
 from enum import Enum
 
-from PyQt5.QtWidgets import QWidget, QScrollBar
-from PyQt5.QtGui import QPainter, QColor, QPalette, QFontDatabase, QPen, \
-    QFont, QFontInfo, QFontMetrics, QPixmap
-from PyQt5.QtCore import Qt, QTimer, QMutex, pyqtSignal
+from Qt.QtWidgets import QWidget, QScrollBar
+from Qt.QtGui import QPainter, QColor, QPalette, QFontDatabase, QPen, QFont, QFontInfo, QFontMetrics, QPixmap
+from Qt.QtCore import Qt, QTimer, QMutex, Signal
 
-from .terminal_buffer import TerminalBuffer, DEFAULT_BG_COLOR, \
-    DEFAULT_FG_COLOR, ControlChar
+from .terminal_buffer import TerminalBuffer, DEFAULT_BG_COLOR, DEFAULT_FG_COLOR, ControlChar
 
-settings = {
-    "padding": 4,
-    "font-size": 10,
-    "line-height-factor": 1.2,
-}
+settings = {"padding": 4, "font-size": 10, "line-height-factor": 1.2, }
 
 
 class CursorState(Enum):
@@ -23,7 +17,6 @@ class CursorState(Enum):
 
 
 class Terminal(TerminalBuffer, QWidget):
-
     # Terminal widget.
     # Note: One should not call functions that begin with _, especially those
     #       linking with painting things.
@@ -31,28 +24,28 @@ class Terminal(TerminalBuffer, QWidget):
     #       thread, Qt will crash immediately. Just don't do that.
 
     # signal for triggering a on-canvas buffer repaint
-    buffer_repaint_sig = pyqtSignal()
+    buffer_repaint_sig = Signal()
 
     # signal for triggering a on-canvas cursor repaint
-    cursor_repaint_sig = pyqtSignal()
+    cursor_repaint_sig = Signal()
 
     # signal for triggering a repaint for both the canvas and the widget
-    total_repaint_sig = pyqtSignal()
+    total_repaint_sig = Signal()
 
     # internal signal for triggering stdout routine for buffering and
     # painting. Note: Use stdout() method.
-    _stdout_sig = pyqtSignal(bytes)
+    _stdout_sig = Signal(bytes)
 
     # update scroll bar
-    update_scroll_sig = pyqtSignal()
+    update_scroll_sig = Signal()
 
     def __init__(self, width, height, logger=None):
         QWidget.__init__(self)
 
         self.scroll_bar: QScrollBar = None
 
-        self.logger = logger if logger else logging.getLogger()
-        self.logger.info("Initializing Terminal...")
+        logger = logger if logger else logging.getLogger()
+        logger.info("Initializing Terminal...")
 
         TerminalBuffer.__init__(self, 0, 0, logger)
 
@@ -148,6 +141,10 @@ class Terminal(TerminalBuffer, QWidget):
         self.row_len = int(self._width / self.char_width)
         self.col_len = int(self._height / self.line_height)
 
+    def write(self, *args, **kwargs):
+        super().write(*args, **kwargs)
+        self._canvas_repaint()
+
     def resizeEvent(self, event):
         self.resize(event.size().width(), event.size().height())
 
@@ -159,11 +156,7 @@ class Terminal(TerminalBuffer, QWidget):
         self._painter_lock.lock()
         _qp = QPainter(self)
         _qp.setRenderHint(QPainter.Antialiasing)
-        _qp.drawPixmap(
-            int(settings["padding"]/2),
-            int(settings["padding"]/2),
-            self._canvas
-        )
+        _qp.drawPixmap(int(settings["padding"] / 2), int(settings["padding"] / 2), self._canvas)
         QWidget.paintEvent(self, event)
         self._painter_lock.unlock()
 
@@ -171,8 +164,7 @@ class Terminal(TerminalBuffer, QWidget):
         self._painter_lock.lock()
 
         self._canvas = QPixmap(self.row_len * self.char_width * self.dpr,
-                               int((self.col_len + 0.2)
-                                   * self.line_height * self.dpr))
+                               int((self.col_len + 0.2) * self.line_height * self.dpr))
         self._canvas.setDevicePixelRatio(self.dpr)
 
         qp = QPainter(self._canvas)
@@ -206,20 +198,19 @@ class Terminal(TerminalBuffer, QWidget):
                     ft.setUnderline(c.underline)
                     qp.setFont(ft)
                     if not c.reverse:
-                        qp.fillRect(cn*cw, int(ht - 0.8*ch), cw, lh,
-                                    c.bg_color)
+                        qp.fillRect(cn * cw, int(ht - 0.8 * ch), cw, lh, c.bg_color)
                         qp.setPen(c.color)
-                        qp.drawText(cn*cw, ht, c.char)
+                        qp.drawText(cn * cw, ht, c.char)
                     else:
-                        qp.fillRect(cn*cw, int(ht - 0.8*ch), cw, lh, c.color)
+                        qp.fillRect(cn * cw, int(ht - 0.8 * ch), cw, lh, c.color)
                         qp.setPen(c.bg_color)
-                        qp.drawText(cn*cw, ht, c.char)
+                        qp.drawText(cn * cw, ht, c.char)
                 else:
                     qp.setPen(fg_color)
                     ft.setBold(False)
                     ft.setUnderline(False)
                     qp.setFont(ft)
-                    qp.drawText(ht, cn*cw, " ")
+                    qp.drawText(ht, cn * cw, " ")
         qp.end()
 
         self._painter_lock.unlock()
@@ -232,11 +223,9 @@ class Terminal(TerminalBuffer, QWidget):
         ind_x = self._cursor_position.x
         ind_y = self._cursor_position.y
         # if cursor is at the right edge of screen, display half of it
-        x = (ind_x if ind_x < self.row_len else (self.row_len - 0.5)) \
-            * self.char_width
-        y = (ind_y - self._buffer_display_offset) \
-            * self.line_height + (self.line_height - self.char_height) \
-            + int(0.2 * self.line_height)
+        x = (ind_x if ind_x < self.row_len else (self.row_len - 0.5)) * self.char_width
+        y = (ind_y - self._buffer_display_offset) * self.line_height + (self.line_height - self.char_height) + int(
+            0.2 * self.line_height)
 
         cw = self.char_width
         ch = self.char_height
@@ -260,8 +249,7 @@ class Terminal(TerminalBuffer, QWidget):
         qp.setPen(fg)
         qp.setFont(self.font)
 
-        cy = (self._cursor_position.y - self._buffer_display_offset + 1) \
-            * self.line_height
+        cy = (self._cursor_position.y - self._buffer_display_offset + 1) * self.line_height
         if ind_x == self.row_len:  # cursor sitting at the edge of screen
             pass
         elif self._buffer[ind_y][ind_x]:
@@ -287,16 +275,12 @@ class Terminal(TerminalBuffer, QWidget):
         QWidget.resize(self, width, height)
 
         row_len = int((width - settings["padding"]) / self.char_width)
-        col_len = min(
-            int((height - settings["padding"]) / self.line_height),
-            self.maximum_line_history
-        )
+        col_len = min(int((height - settings["padding"]) / self.line_height), self.maximum_line_history)
 
         TerminalBuffer.resize(self, row_len, col_len)
 
         self._paint_buffer()
-        self._restore_cursor_state()
-        # self._log_buffer()
+        self._restore_cursor_state()  # self._log_buffer()
 
     def toggle_alt_screen(self, on=True):
         TerminalBuffer.toggle_alt_screen(self, on)
@@ -486,13 +470,15 @@ class Terminal(TerminalBuffer, QWidget):
 
         if text:
             self.input(text.encode('utf-8'))
-    
+
     def showEvent(self, event):
         super().showEvent(event)
+
         def resize(*args):
             self.resize(self.size().width(), self.size().height())
+
         QTimer.singleShot(0, resize)
-    
+
     # ==========================
     #        SCROLL BAR
     # ==========================

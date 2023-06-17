@@ -4,8 +4,8 @@ from enum import Enum
 from functools import partial
 from collections import deque
 
-from PyQt5.QtGui import QColor
-from PyQt5.QtCore import Qt, QMutex
+from Qt.QtGui import QColor
+from Qt.QtCore import Qt, QMutex
 
 from .colors import colors8, colors16, colors256
 
@@ -411,7 +411,7 @@ class EscapeProcessor:
         self.reverse_index_cb()
 
     def _csi_n(self):
-        # DSR – Device Status Report
+        # DSR - Device Status Report
         arg = self._get_args(0, default=0)
         if arg == 6:
             self.report_cursor_position_cb()
@@ -419,11 +419,11 @@ class EscapeProcessor:
             self.report_device_status_cb()
 
     def _csi_J(self):
-        # ED – Erase In Display
+        # ED - Erase In Display
         self.erase_display_cb(self._get_args(0, default=0))
 
     def _csi_K(self):
-        # EL – Erase In Line
+        # EL - Erase In Line
         self.erase_line_cb(self._get_args(0, default=0))
 
     def _csi_P(self):
@@ -433,7 +433,7 @@ class EscapeProcessor:
         self.delete_line_cb(self._get_args(0, default=1))
 
     def _csi_H(self):
-        # CUP – Cursor On-Screen Position
+        # CUP - Cursor On-Screen Position
         self.set_cursor_abs_position_cb(
             self._get_args(1, default=1) - 1,
             self._get_args(0, default=1) - 1  # begin from 1 -> begin from 0
@@ -1308,4 +1308,3 @@ class TerminalBuffer:
             self._scroll_update_pending = True
         else:
             self.update_scroll_position()
-
