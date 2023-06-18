@@ -1202,16 +1202,15 @@ class TerminalBuffer:
     def _stdout_string(self, string: bytes):
         # ret: need_draw
         need_draw = False
-        tst_buf = ""
-
+        tst_buf = bytearray()
         for char in string:
             try:
                 # self.clear_input_buffer()
                 ret = self.escape_processor.input(char)
                 if ret == 0:
                     if tst_buf:
-                        self.write_at_cursor(tst_buf)
-                        tst_buf = ""
+                        self.write_at_cursor(tst_buf.decode('utf-8'))
+                        tst_buf = bytearray()
                     continue
 
                 if ret == 1:
@@ -1221,27 +1220,27 @@ class TerminalBuffer:
                 if ret == -1:
                     if char == ControlChar.BS.value:
                         if tst_buf:
-                            self.write_at_cursor(tst_buf)
-                            tst_buf = ""
+                            self.write_at_cursor(tst_buf.decode('utf-8'))
+                            tst_buf = bytearray()
                         self.backspace()
                     elif char == ControlChar.CR.value:
                         if tst_buf:
-                            self.write_at_cursor(tst_buf)
-                            tst_buf = ""
+                            self.write_at_cursor(tst_buf.decode('utf-8'))
+                            tst_buf = bytearray()
                         self.carriage_feed()
 
                     elif char == ControlChar.LF.value:
                         if tst_buf:
-                            self.write_at_cursor(tst_buf)
-                            tst_buf = ""
+                            self.write_at_cursor(tst_buf.decode('utf-8'))
+                            tst_buf = bytearray()
                         self.write_at_cursor("\n")
                     elif char == ControlChar.TAB.value:
-                        tst_buf += "        "
+                        tst_buf += b"        "
                     elif char == ControlChar.BEL.value:
                         # TODO: visual bell
                         pass
                     elif 32 <= char <= 126 or char >= 128:
-                        tst_buf += chr(char)
+                        tst_buf.append(char)
                     else:
                         self.logger.warn(f"Unhandled char {hex(char)}.")
                     need_draw = True
@@ -1249,7 +1248,7 @@ class TerminalBuffer:
                 self.logger.debug(e)
 
         if tst_buf:
-            self.write_at_cursor(tst_buf)
+            self.write_at_cursor(tst_buf.decode('utf-8'))
 
         return need_draw
 
