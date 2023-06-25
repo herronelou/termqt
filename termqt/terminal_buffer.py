@@ -44,8 +44,28 @@ class ControlChar(Enum):
     ESC = 27  # Ctrl-[, escape
 
 
+
+class Placeholder(Enum):
+    # Placeholder for correctly display double-width characters
+
+    # This character isn't a placeholder
+    NON = 0
+
+    # Placeholder before the double-width character
+    # In the case that current line has no enough space, LEAD
+    # placeholder is inserted to push this character to the next line
+    LEAD = 1
+
+    # Placeholder after the double-width character
+    TAIL = 2
+
+
 class Char(NamedTuple):
     char: str
+    char_width: int
+    placeholder: Placeholder
+
+    # style
     color: QColor = None
     bg_color: QColor = None
     bold: bool = False
@@ -221,6 +241,11 @@ class EscapeProcessor:
         # Save Cursor and Use Alternate Screen Buffer
         #  on: bool, on/off
         self.save_cursor_use_alt_buffer = lambda on: None
+
+        # Enable/Disable wraparound mode
+        # https://terminalguide.namepad.de/mode/p7/
+        #  on: bool, enable/disable
+        self.enable_auto_wrap = lambda on: None
 
         # Auto-wrap
         #  on: bool, on/off
@@ -550,23 +575,36 @@ class EscapeProcessor:
         arg = self._get_args(0, default=0)
         if arg == 0:
             self.fail()
+        elif arg == 7:
+            self.enable_auto_wrap(on)
         elif arg == 47:
             self.use_alt_buffer(on)
         elif arg == 1049:
             self.save_cursor_use_alt_buffer(on)
+        # else:
+        #     self.logger.debug(f"escape: unknown mode {arg}")
 
 
 class TerminalBuffer:
-    def __init__(self, row_len=0, col_len=0, logger=None):
+    def __init__(self,
+                 row_len,
+                 col_len,
+                 *,
+                 logger=None,
+                 auto_wrap_enabled=True
+                 ):
         self.logger = logger
 
         # initialize a buffer to store all characters to display
         # define in _resize()_ as a deque
         self._buffer = None
         self._buffer_lock = QMutex(QMutex.Recursive)
+
+        self.auto_wrap_enabled = auto_wrap_enabled
         # used to store the line number of lines that are wrapped automatically
         # in order to behave correctly when resizing the widget.
         self._line_wrapped_flags = None
+
         # used to store which part of the buffer is visible.
         self._buffer_display_offset = None
         self._cursor_position = Position(0, 0)
@@ -634,6 +672,7 @@ class TerminalBuffer:
         ep.set_style_cb = self.set_style
         ep.use_alt_buffer = self.toggle_alt_screen
         ep.save_cursor_use_alt_buffer = self.toggle_alt_screen_save_cursor
+        ep.enable_auto_wrap = self.enable_auto_wrap
 
     def set_bg(self, color: QColor):
         self._bg_color = color
@@ -680,6 +719,8 @@ class TerminalBuffer:
     def resize(self, row_len, col_len):
         cur_x = self._cursor_position.x
         cur_y = self._cursor_position.y
+
+        do_auto_wrap = self.auto_wrap_enabled
 
         assert col_len <= self.maximum_line_history
 
@@ -753,7 +794,11 @@ class TerminalBuffer:
                         new_y += 1
                         new_x = 0
 
-            for x, c in enumerate(old_row):
+            x = -1
+            while x + 1 < len(old_row):
+                x += 1
+                c = old_row[x]
+
                 # clear _breaked_ flag
                 # note that it should only be set when the new row length
                 # is the integer multiple of the length of the old row
@@ -761,12 +806,28 @@ class TerminalBuffer:
                 # inserted
                 breaked = False
 
-                _new_buffer[new_y][new_x] = c
+                if c and c.placeholder == Placeholder.LEAD:
+                    continue
 
-                new_x += 1
+                width = c.char_width if c else 1
+
+                if new_x + width > row_len:
+                    # char too wide to fit into this row
+                    while new_x < row_len:
+                        _new_buffer[new_y][new_x] = Char("", 0, Placeholder.LEAD)
+                        new_x += 1
+                    x -= 1
+                else:
+                    _new_buffer[new_y][new_x] = c
+                    new_x += 1
 
                 if new_x >= row_len:
-                    empty_ahead = all(map(lambda c: not c, old_row[x+1:]))
+                    if not do_auto_wrap:
+                        new_x = row_len - 1
+                        continue
+
+                    empty_ahead = all(map(lambda c: not c or c.placeholder != Placeholder.NON,
+                                          old_row[x+1:]))
 
                     if y == old_buf_col_len - 1 and empty_ahead:
                         # avoid creating extra new lines after last line
@@ -843,24 +904,43 @@ class TerminalBuffer:
 
         color, bgcolor = self._fg_color, self._bg_color
         bold, underline, reverse = self._bold, self._underline, self._reversed
+        do_auto_wrap = self.auto_wrap_enabled
 
-        char_list = [Char(t, color, bgcolor,
+        char_list = [Char(t, self.get_char_width(t), Placeholder.NON, color, bgcolor,
                           bold, underline, reverse) for t in text]
 
-        for i, t in enumerate(char_list):
-            if pos_x == row_len or t.char == '\n':
+        i = -1
+        while i + 1 < len(char_list):
+            i += 1
+            t = char_list[i]
+
+            if t.char == '\n':
                 pos_x = 0
                 pos_y += 1
                 if pos_y == len(buf):
                     buf.append([None for x in range(self.row_len)])
                     self._line_wrapped_flags.append(False)
-                if t.char == '\n':
-                    continue
-                else:
+                continue
+
+            if pos_x + t.char_width > row_len:
+                if do_auto_wrap:
+                    for j in range(row_len - pos_x):
+                        buf[pos_y][pos_x + j] = Char("", 0, Placeholder.LEAD)
+
+                    pos_x = 0
+                    pos_y += 1
                     self._line_wrapped_flags[pos_y - 1] = True
+                    if pos_y == len(buf):
+                        buf.append([None for x in range(self.row_len)])
+                        self._line_wrapped_flags.append(False)
+                else:
+                    pos_x = row_len - t.char_width
 
             buf[pos_y][pos_x] = t
-            pos_x += 1
+            for j in range(1, t.char_width):
+                buf[pos_y][pos_x + j] = Char("", 0, Placeholder.TAIL)
+
+            pos_x += t.char_width  # could result in pos_x == row_len when exiting loop
 
         while len(self._buffer) > self.maximum_line_history:
             buf.popleft()
@@ -868,7 +948,8 @@ class TerminalBuffer:
             pos_y -= 1
 
         if set_cursor:
-            self._cursor_position = Position(pos_x, pos_y)
+            # assert pos_x <= row_len
+            self._cursor_position = Position(min(pos_x, row_len-1), pos_y)
 
         if reset_offset:
             self._buffer_display_offset = min(len(self._buffer) - self.col_len,
@@ -888,6 +969,9 @@ class TerminalBuffer:
                     self._buffer_display_offset + y_from_screen_top - self.col_len + 1,
                     len(self._buffer) - self.col_len)
             self.update_scroll_position_postponed()
+
+    def get_char_width(self, char):
+        return 1
 
     def _log_buffer(self):
         self.logger.info(f"buffer: length: {len(self._buffer)}")
@@ -1063,6 +1147,9 @@ class TerminalBuffer:
 
         self.toggle_alt_screen(on)
 
+    def enable_auto_wrap(self, on=True):
+        self.auto_wrap_enabled = on
+
     # ==========================
     #       CURSOR CONTROL
     # ==========================
@@ -1166,51 +1253,26 @@ class TerminalBuffer:
         # Note that this function accepts UTF-8 only (since python use utf-8).
         # Normally modern programs will determine the encoding of its stdout
         # from env variable LC_CTYPE and for most systems, it is set to utf-8.
-        for char in string:
-            self._stdout_char(char)
-
-    def _stdout_char(self, char: int):
-        # ret: need_draw
-        try:
-            # self.clear_input_buffer()
-            ret = self.escape_processor.input(char)
-            if ret == 1:
-                return True
-            elif ret == -1:
-                if char == ControlChar.BS.value:
-                    self.backspace()
-                elif char == ControlChar.LF.value:
-                    self.write_at_cursor("\n")
-                elif char == ControlChar.CR.value:
-                    self.carriage_feed()
-                elif char == ControlChar.TAB.value:
-                    self.write_at_cursor("        ")
-                elif char == ControlChar.BEL.value:
-                    # TODO: visual bell
-                    pass
-                elif 32 <= char <= 126 or char >= 128:
-                    self.write_at_cursor(chr(char))
-                else:
-                    self.logger.warn(f"Unhandled char {hex(char)}.")
-                return True
-
-            return False
-
-        except ValueError as e:
-            self.logger.debug(e)
+        self._stdout_string(string)
 
     def _stdout_string(self, string: bytes):
         # ret: need_draw
         need_draw = False
-        tst_buf = bytearray()
-        for char in string:
+        tst_buf = ""
+
+        i = -1
+
+        while i + 1 < len(string):
+            i += 1
+            char = string[i]
+
             try:
                 # self.clear_input_buffer()
                 ret = self.escape_processor.input(char)
                 if ret == 0:
                     if tst_buf:
-                        self.write_at_cursor(tst_buf.decode('utf-8'))
-                        tst_buf = bytearray()
+                        self.write_at_cursor(tst_buf)
+                        tst_buf = ""
                     continue
 
                 if ret == 1:
@@ -1220,35 +1282,47 @@ class TerminalBuffer:
                 if ret == -1:
                     if char == ControlChar.BS.value:
                         if tst_buf:
-                            self.write_at_cursor(tst_buf.decode('utf-8'))
-                            tst_buf = bytearray()
+                            self.write_at_cursor(tst_buf)
+                            tst_buf = ""
                         self.backspace()
                     elif char == ControlChar.CR.value:
                         if tst_buf:
-                            self.write_at_cursor(tst_buf.decode('utf-8'))
-                            tst_buf = bytearray()
+                            self.write_at_cursor(tst_buf)
+                            tst_buf = ""
                         self.carriage_feed()
 
                     elif char == ControlChar.LF.value:
                         if tst_buf:
-                            self.write_at_cursor(tst_buf.decode('utf-8'))
-                            tst_buf = bytearray()
+                            self.write_at_cursor(tst_buf)
+                            tst_buf = ""
                         self.write_at_cursor("\n")
                     elif char == ControlChar.TAB.value:
-                        tst_buf += b"        "
+                        tst_buf += "        "
                     elif char == ControlChar.BEL.value:
                         # TODO: visual bell
                         pass
-                    elif 32 <= char <= 126 or char >= 128:
-                        tst_buf.append(char)
+
+                    # determing utf-8 char width
+                    elif char & 0xc0 == 0xc0:  # 2-byte, 3-byte, or 4-byte
+                        if char & 0xe0 == 0xe0:  # 3-byte or 4-byte
+                            if char & 0xf0 == 0xf0:  # 4-byte
+                                tst_buf += string[i:i+4].decode("utf-8")
+                                i += 3
+                            else:  # 3-byte
+                                tst_buf += string[i:i+3].decode("utf-8")
+                                i += 2
+                        else:  # 2-byte
+                                tst_buf += string[i:i+2].decode("utf-8")
+                                i += 1
                     else:
-                        self.logger.warn(f"Unhandled char {hex(char)}.")
+                        tst_buf += chr(char)
+
                     need_draw = True
             except ValueError as e:
                 self.logger.debug(e)
 
         if tst_buf:
-            self.write_at_cursor(tst_buf.decode('utf-8'))
+            self.write_at_cursor(tst_buf)
 
         return need_draw
 

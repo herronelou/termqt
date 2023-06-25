@@ -1,4 +1,5 @@
 import logging
+import math
 from enum import Enum
 
 from Qt.QtWidgets import QWidget, QScrollBar
@@ -6,13 +7,7 @@ from Qt.QtGui import QPainter, QColor, QPalette, QFontDatabase, QPen, QFont, QFo
 from Qt.QtCore import Qt, QTimer, QMutex, Signal
 
 from .terminal_buffer import TerminalBuffer, DEFAULT_BG_COLOR, \
-    DEFAULT_FG_COLOR, ControlChar
-
-settings = {
-    "padding": 4,
-    "font-size": 10,
-    "line-height-factor": 1.2,
-}
+    DEFAULT_FG_COLOR, ControlChar, Placeholder
 
 
 class CursorState(Enum):
@@ -45,15 +40,26 @@ class Terminal(TerminalBuffer, QWidget):
     # update scroll bar
     update_scroll_sig = Signal()
 
-    def __init__(self, width, height, logger=None):
+    def __init__(self,
+                 width,
+                 height,
+                 *,
+                 logger=None,
+                 padding=4,
+                 font_size=12,
+                 line_height_factor=1.2,
+                 font=None,
+                 **kwargs
+                 ):
+
         QWidget.__init__(self)
 
         self.scroll_bar: QScrollBar = None
 
-        logger = logger if logger else logging.getLogger()
-        logger.info("Initializing Terminal...")
+        self.logger = logger if logger else logging.getLogger()
+        self.logger.info("Initializing Terminal...")
 
-        TerminalBuffer.__init__(self, 0, 0, logger)
+        TerminalBuffer.__init__(self, 0, 0, logger=self.logger, **kwargs)
 
         # we paint everything to the pixmap first then paint this pixmap
         # on paint event. This allows us to partially update the canvas.
@@ -62,7 +68,10 @@ class Terminal(TerminalBuffer, QWidget):
 
         self._width = width
         self._height = height
+        self._padding = padding
+        self._line_height_factor = line_height_factor
 
+        self.font_size = font_size
         self.font = None
         self.char_width = None
         self.char_height = None
@@ -74,7 +83,8 @@ class Terminal(TerminalBuffer, QWidget):
 
         self.set_bg(DEFAULT_BG_COLOR)
         self.set_fg(DEFAULT_FG_COLOR)
-        self.set_font()
+        self.metrics = None
+        self.set_font(font)
         self.setAutoFillBackground(True)
         self.setMinimumSize(width, height)
 
@@ -130,16 +140,19 @@ class Terminal(TerminalBuffer, QWidget):
         elif "Menlo" in qfd.families():
             font = QFont("Menlo")
             info = QFontInfo(font)
+        elif "Consolas" in qfd.families():
+            font = QFont("Consolas")
+            info = QFontInfo(font)
         else:
             font = qfd.systemFont(QFontDatabase.FixedFont)
             info = QFontInfo(font)
 
-        font.setPointSize(settings["font-size"])
+        font.setPointSize(self.font_size)
         self.font = font
-        metrics = QFontMetrics(font)
-        self.char_width = metrics.horizontalAdvance("A")
-        self.char_height = metrics.height()
-        self.line_height = int(self.char_height * settings["line-height-factor"])
+        self.metrics = QFontMetrics(font)
+        self.char_width = self.metrics.horizontalAdvance("A")
+        self.char_height = self.metrics.height()
+        self.line_height = int(self.char_height * self._line_height_factor)
 
         self.logger.info(f"font: Font {info.family()} selected, character "
                          f"size {self.char_width}x{self.char_height}.")
@@ -159,8 +172,8 @@ class Terminal(TerminalBuffer, QWidget):
         _qp = QPainter(self)
         _qp.setRenderHint(QPainter.Antialiasing)
         _qp.drawPixmap(
-            int(settings["padding"]/2),
-            int(settings["padding"]/2),
+            int(self._padding/2),
+            int(self._padding/2),
             self._canvas
         )
         QWidget.paintEvent(self, event)
@@ -201,18 +214,20 @@ class Terminal(TerminalBuffer, QWidget):
             ht += lh
             for cn, c in enumerate(row):
                 if c:
-                    ft.setBold(c.bold)
-                    ft.setUnderline(c.underline)
-                    qp.setFont(ft)
-                    if not c.reverse:
-                        qp.fillRect(cn*cw, int(ht - 0.8*ch), cw, lh,
-                                    c.bg_color)
-                        qp.setPen(c.color)
-                        qp.drawText(cn*cw, ht, c.char)
-                    else:
-                        qp.fillRect(cn*cw, int(ht - 0.8*ch), cw, lh, c.color)
-                        qp.setPen(c.bg_color)
-                        qp.drawText(cn*cw, ht, c.char)
+                    if c.placeholder == Placeholder.NON:
+                        ft.setBold(c.bold)
+                        ft.setUnderline(c.underline)
+                        qp.setFont(ft)
+                        if not c.reverse:
+                            qp.fillRect(cn*cw, int(ht - 0.8*ch), cw*c.char_width, lh,
+                                        c.bg_color)
+                            qp.setPen(c.color)
+                            qp.drawText(cn*cw, ht, c.char)
+                        else:
+                            qp.fillRect(cn*cw, int(ht - 0.8*ch), cw*c.char_width, lh,
+                                        c.color)
+                            qp.setPen(c.bg_color)
+                            qp.drawText(cn*cw, ht, c.char)
                 else:
                     qp.setPen(fg_color)
                     ft.setBold(False)
@@ -231,11 +246,11 @@ class Terminal(TerminalBuffer, QWidget):
         ind_x = self._cursor_position.x
         ind_y = self._cursor_position.y
         # if cursor is at the right edge of screen, display half of it
-        x = (ind_x if ind_x < self.row_len else (self.row_len - 0.5)) \
-            * self.char_width
-        y = (ind_y - self._buffer_display_offset) \
-            * self.line_height + (self.line_height - self.char_height) \
-            + int(0.2 * self.line_height)
+        x = int((ind_x if ind_x < self.row_len else (self.row_len - 0.5)) \
+                * self.char_width)
+        y = int((ind_y - self._buffer_display_offset) \
+                * self.line_height + (self.line_height - self.char_height) \
+                + 0.2 * self.line_height)
 
         cw = self.char_width
         ch = self.char_height
@@ -263,10 +278,23 @@ class Terminal(TerminalBuffer, QWidget):
             * self.line_height
         if ind_x == self.row_len:  # cursor sitting at the edge of screen
             pass
-        elif self._buffer[ind_y][ind_x]:
-            qp.drawText(x, cy, self._buffer[ind_y][ind_x].char)
         else:
-            qp.drawText(x, cy, " ")
+            chr_x = ind_x
+            c = self._buffer[ind_y][chr_x]
+
+            if not c:
+                qp.drawText(x, cy, " ")
+            elif self._cursor_blinking_state == CursorState.OFF or \
+                    c.char_width == 1:
+                while c and c.placeholder != Placeholder.NON:
+                    chr_x -= 1
+                    x -= self.char_width
+                    c = self._buffer[ind_y][chr_x]
+
+                if c:
+                    qp.drawText(x, cy, c.char)
+                else:
+                    qp.drawText(x, cy, " ")
 
         qp.end()
         self._painter_lock.unlock()
@@ -275,6 +303,12 @@ class Terminal(TerminalBuffer, QWidget):
         self._paint_buffer()
         self._paint_cursor()
         self.repaint()
+
+    def get_char_width(self, t):
+        if len(t.encode("utf-8")) == 1:
+            return 1
+        else:
+            return math.ceil(self.metrics.horizontalAdvance(t) / self.char_width)
 
     # ==========================
     #  SCREEN BUFFER FUNCTIONS
@@ -285,9 +319,9 @@ class Terminal(TerminalBuffer, QWidget):
 
         QWidget.resize(self, width, height)
 
-        row_len = int((width - settings["padding"]) / self.char_width)
+        row_len = int((width - self._padding) / self.char_width)
         col_len = min(
-            int((height - settings["padding"]) / self.line_height),
+            int((height - self._padding) / self.line_height),
             self.maximum_line_history
         )
 
@@ -375,9 +409,6 @@ class Terminal(TerminalBuffer, QWidget):
         # from env variable LC_CTYPE and for most systems, it is set to utf-8.
         self._postpone_scroll_update = True
         self._buffer_lock.lock()
-        need_draw = False
-        # for char in string:
-        #     need_draw = self._stdout_char(char) or need_draw
         need_draw = self._stdout_string(string)
         self._buffer_lock.unlock()
         if need_draw:
@@ -485,14 +516,13 @@ class Terminal(TerminalBuffer, QWidget):
 
         if text:
             self.input(text.encode('utf-8'))
-    
+
     def showEvent(self, event):
         super().showEvent(event)
         def resize(*args):
             self.resize(self.size().width(), self.size().height())
-
         QTimer.singleShot(0, resize)
-    
+
     # ==========================
     #        SCROLL BAR
     # ==========================
@@ -516,4 +546,3 @@ class Terminal(TerminalBuffer, QWidget):
             self._buffer_display_offset = pos
             self._paint_buffer()
             self.repaint()
-            
